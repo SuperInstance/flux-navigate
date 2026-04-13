@@ -440,4 +440,328 @@ mod tests {
         assert_eq!(p, q);
         format!("{:?}", p); // just ensure it compiles
     }
+
+    // ── BFS Correctness & Path Integrity ──
+
+    #[test]
+    fn test_bfs_returns_empty_path_for_same_start_goal() {
+        let nav = Navigator::new();
+        let result = nav.bfs(Point { x: 5, y: 5 }, Point { x: 5, y: 5 });
+        assert_eq!(result, Some(vec![]));
+    }
+
+    #[test]
+    fn test_bfs_returns_none_for_blocked_goal() {
+        let mut nav = Navigator::new();
+        let mut g = [[false; 32]; 32];
+        g[10][10] = true;
+        nav.set_grid(&g);
+        let result = nav.bfs(Point { x: 0, y: 0 }, Point { x: 10, y: 10 });
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_bfs_returns_none_for_out_of_bounds_goal() {
+        let nav = Navigator::new();
+        assert_eq!(nav.bfs(Point { x: 0, y: 0 }, Point { x: -1, y: 0 }), None);
+        assert_eq!(nav.bfs(Point { x: 0, y: 0 }, Point { x: 32, y: 0 }), None);
+        assert_eq!(nav.bfs(Point { x: 0, y: 0 }, Point { x: 0, y: -1 }), None);
+        assert_eq!(nav.bfs(Point { x: 0, y: 0 }, Point { x: 0, y: 32 }), None);
+    }
+
+    #[test]
+    fn test_bfs_path_consists_of_adjacent_cells() {
+        let nav = Navigator::new();
+        let path = nav.bfs(Point { x: 0, y: 0 }, Point { x: 5, y: 5 }).unwrap();
+        // every consecutive pair must be Manhattan-adjacent (distance == 1)
+        let mut prev = Point { x: 0, y: 0 };
+        for pt in &path {
+            let dist = (pt.x - prev.x).unsigned_abs() + (pt.y - prev.y).unsigned_abs();
+            assert_eq!(dist, 1, "non-adjacent step from {:?} to {:?}", prev, pt);
+            prev = *pt;
+        }
+    }
+
+    #[test]
+    fn test_bfs_path_length_equals_manhattan_distance_in_open_grid() {
+        let nav = Navigator::new();
+        let path = nav.bfs(Point { x: 0, y: 0 }, Point { x: 7, y: 4 }).unwrap();
+        assert_eq!(path.len(), 11); // 7 + 4 = 11
+    }
+
+    // ── Maze / Corridor Navigation ──
+
+    #[test]
+    fn test_single_cell_corridor() {
+        let mut nav = Navigator::new();
+        let mut g = [[true; 32]; 32]; // everything blocked
+        g[0][0] = false;
+        g[1][0] = false;
+        g[2][0] = false;
+        g[3][0] = false;
+        nav.set_grid(&g);
+        assert!(nav.set_destination(3, 0));
+        loop {
+            let r = nav.step();
+            if r == 0 { break; }
+            assert_eq!(r, 1);
+        }
+        assert_eq!(nav.current(), Point { x: 3, y: 0 });
+    }
+
+    #[test]
+    fn test_l_shaped_corridor() {
+        let mut nav = Navigator::new();
+        let mut g = [[true; 32]; 32];
+        // carve L-shape: (0,0)->(4,0)->(4,3)
+        for x in 0..5 { g[x][0] = false; }
+        for y in 0..4 { g[4][y] = false; }
+        nav.set_grid(&g);
+        assert!(nav.set_destination(4, 3));
+        let mut steps = 0;
+        loop {
+            let r = nav.step();
+            if r == 0 { break; }
+            assert_eq!(r, 1);
+            steps += 1;
+        }
+        // 4 right + 3 up = 7 moves, but last step returns 0 (arrived)
+        assert_eq!(steps, 6);
+        assert!(nav.at_destination());
+    }
+
+    #[test]
+    fn test_zigzag_maze() {
+        let mut nav = Navigator::new();
+        let mut g = [[true; 32]; 32];
+        // carve zigzag: row 0 cols 0..8, row 2 cols 0..8, col 7 rows 0..3
+        for x in 0..8 { g[x][0] = false; }
+        for x in 0..8 { g[x][2] = false; }
+        for y in 0..3 { g[7][y] = false; }
+        nav.set_grid(&g);
+        assert!(nav.set_destination(7, 2));
+        let mut steps = 0;
+        loop {
+            let r = nav.step();
+            if r == 0 { break; }
+            assert_eq!(r, 1);
+            steps += 1;
+            assert!(steps < 50, "zigzag took too many steps");
+        }
+        assert_eq!(nav.current(), Point { x: 7, y: 2 });
+    }
+
+    // ── Dynamic Obstacle / Replan ──
+
+    #[test]
+    fn test_dynamic_obstacle_mid_navigation() {
+        let mut nav = Navigator::new();
+        assert!(nav.set_destination(5, 0));
+        // take 2 steps to reach (2,0)
+        assert_eq!(nav.step(), 1);
+        assert_eq!(nav.step(), 1);
+        assert_eq!(nav.current(), Point { x: 2, y: 0 });
+        // now block (3,0) and (3,1) — force detour
+        let mut g = [[false; 32]; 32];
+        g[3][0] = true;
+        g[3][1] = true;
+        nav.set_grid(&g);
+        // continue stepping — should replan and eventually arrive
+        let mut steps = 0;
+        loop {
+            let r = nav.step();
+            if r == 0 && nav.at_destination() { break; }
+            if r == -1 { panic!("navigation became blocked after dynamic obstacle"); }
+            steps += 1;
+            assert!(steps < 30, "took too long after dynamic obstacle");
+        }
+        assert_eq!(nav.current(), Point { x: 5, y: 0 });
+    }
+
+    #[test]
+    fn test_replan_when_not_navigating_returns_false() {
+        let mut nav = Navigator::new();
+        assert!(!nav.replan()); // not navigating, should return false
+    }
+
+    // ── Boundary Edge Cases ──
+
+    #[test]
+    fn test_navigate_to_all_four_corners() {
+        let corners = [(0, 0), (0, 31), (31, 0), (31, 31)];
+        for (cx, cy) in corners {
+            let mut nav = Navigator::new();
+            assert!(nav.set_destination(cx, cy), "failed to set dest ({}, {})", cx, cy);
+            loop {
+                let r = nav.step();
+                if r == 0 { break; }
+                assert_eq!(r, 1);
+            }
+            assert_eq!(nav.current(), Point { x: cx, y: cy });
+        }
+    }
+
+    #[test]
+    fn test_set_destination_to_boundary_cells() {
+        let mut nav = Navigator::new();
+        // all four edges, should succeed for non-blocked cells
+        assert!(nav.set_destination(0, 0));
+        assert!(nav.set_destination(31, 0));
+        assert!(nav.set_destination(0, 31));
+        assert!(nav.set_destination(31, 31));
+        assert!(!nav.set_destination(32, 0));  // out of bounds
+        assert!(!nav.set_destination(-1, 0));  // out of bounds
+    }
+
+    // ── Waypoint Edge Cases ──
+
+    #[test]
+    fn test_waypoint_at_start_position() {
+        let mut nav = Navigator::new();
+        nav.add_waypoint(0, 0); // already here
+        assert!(nav.set_destination(3, 0));
+        loop {
+            let r = nav.step();
+            if r == 0 && nav.at_destination() { break; }
+            if r == -1 { panic!("blocked navigating through waypoint at start"); }
+        }
+        assert_eq!(nav.current(), Point { x: 3, y: 0 });
+    }
+
+    #[test]
+    fn test_single_waypoint_same_as_destination() {
+        let mut nav = Navigator::new();
+        nav.add_waypoint(5, 5);
+        assert!(nav.set_destination(5, 5));
+        loop {
+            let r = nav.step();
+            if r == 0 && nav.at_destination() { break; }
+            if r == -1 { panic!("blocked"); }
+        }
+        assert_eq!(nav.current(), Point { x: 5, y: 5 });
+    }
+
+    #[test]
+    fn test_clear_waypoints_resets_current_wp() {
+        let mut nav = Navigator::new();
+        nav.add_waypoint(10, 10);
+        nav.add_waypoint(20, 20);
+        nav.set_destination(0, 0);
+        nav.clear_waypoints();
+        // after clearing, next_waypoint should be dest, not the old waypoints
+        assert_eq!(nav.next_waypoint(), Point { x: 0, y: 0 });
+    }
+
+    // ── Progress ──
+
+    #[test]
+    fn test_progress_at_start_and_end() {
+        let mut nav = Navigator::new();
+        // at destination already
+        assert!(nav.set_destination(0, 0));
+        assert_eq!(nav.progress(), 1.0);
+
+        // navigate to (10, 0) — progress should be 0.0 at start
+        let mut nav2 = Navigator::new();
+        nav2.set_destination(10, 0);
+        let p_start = nav2.progress();
+        assert!(p_start < 0.1, "progress at start should be near 0, got {}", p_start);
+    }
+
+    #[test]
+    fn test_progress_is_bounded() {
+        let mut nav = Navigator::new();
+        nav.set_destination(15, 15);
+        for _ in 0..30 {
+            nav.step();
+        }
+        let p = nav.progress();
+        assert!(p >= 0.0 && p <= 1.0, "progress {} out of [0,1]", p);
+    }
+
+    // ── Data Structure Integrity ──
+
+    #[test]
+    fn test_grid_is_32x32() {
+        let nav = Navigator::new();
+        // Access extreme indices to ensure grid is 32x32
+        // This is a compile-time guarantee, but verify behavior
+        let mut g = [[false; 32]; 32];
+        g[31][31] = true;
+        let mut nav = Navigator::new();
+        nav.set_grid(&g);
+        assert!(!nav.set_destination(31, 31)); // blocked
+    }
+
+    #[test]
+    fn test_multiple_set_destination_calls() {
+        let mut nav = Navigator::new();
+        assert!(nav.set_destination(5, 0));
+        assert!(nav.set_destination(10, 0));
+        assert!(nav.set_destination(3, 3));
+        assert_eq!(nav.current(), Point { x: 0, y: 0 }); // position unchanged
+        // navigate to last set destination
+        loop {
+            let r = nav.step();
+            if r == 0 { break; }
+            assert_eq!(r, 1);
+        }
+        assert_eq!(nav.current(), Point { x: 3, y: 3 });
+    }
+
+    // ── Performance Bounds ──
+
+    #[test]
+    fn test_max_grid_distance_within_bound() {
+        let mut nav = Navigator::new();
+        nav.set_destination(31, 31);
+        let mut steps = 0;
+        loop {
+            let r = nav.step();
+            if r == 0 { break; }
+            assert_eq!(r, 1);
+            steps += 1;
+        }
+        // Manhattan distance 31+31=62; step returns 1 for 61 of them, 0 on arrival
+        assert_eq!(steps, 61);
+    }
+
+    #[test]
+    fn test_replan_performance() {
+        let mut nav = Navigator::new();
+        nav.set_destination(31, 31);
+        // replan 100 times — should be fast
+        for _ in 0..100 {
+            assert!(nav.replan());
+        }
+    }
+
+    #[test]
+    fn test_surrounded_origin_is_isolated() {
+        let mut nav = Navigator::new();
+        let mut g = [[false; 32]; 32];
+        // block all valid neighbors of origin: (1,0) and (0,1)
+        g[1][0] = true;
+        g[0][1] = true;
+        nav.set_grid(&g);
+        // origin is still accessible (already there)
+        assert!(nav.set_destination(0, 0));
+        // but can't reach anything else — origin is isolated
+        assert!(!nav.set_destination(2, 1));
+        assert!(nav.blocked());
+    }
+
+    #[test]
+    fn test_completely_walled_off_destination() {
+        let mut nav = Navigator::new();
+        let mut g = [[false; 32]; 32];
+        // wall around (5,5) on all 4 sides
+        g[4][5] = true;
+        g[6][5] = true;
+        g[5][4] = true;
+        g[5][6] = true;
+        nav.set_grid(&g);
+        assert!(!nav.set_destination(5, 5));
+        assert!(nav.blocked());
+    }
 }
