@@ -438,6 +438,60 @@ mod tests {
         let p = Point { x: 3, y: 4 };
         let q = p.clone();
         assert_eq!(p, q);
-        format!("{:?}", p); // just ensure it compiles
+        let _ = format!("{:?}", p); // ensure Debug impl works
+    }
+
+    #[test]
+    fn test_navigate_corridor() {
+        // L-shaped corridor: must go right then down
+        let mut nav = Navigator::new();
+        let mut g = [[false; 32]; 32];
+        // Wall above row 2 from x=0..5
+        for x in 0..5 { g[x][1] = true; }
+        // Wall below row 2 at x=0..2
+        for x in 0..2 { g[x][3] = true; }
+        nav.set_grid(&g);
+        assert!(nav.set_destination(4, 2));
+        loop {
+            let r = nav.step();
+            assert_ne!(r, -1, "got blocked in corridor");
+            if r == 0 { break; }
+        }
+        assert_eq!(nav.current(), Point { x: 4, y: 2 });
+    }
+
+    #[test]
+    fn test_progress_at_destination() {
+        let mut nav = Navigator::new();
+        nav.set_destination(0, 0);
+        assert_eq!(nav.progress(), 1.0);
+    }
+
+    #[test]
+    fn test_replan_not_navigating_returns_false() {
+        let mut nav = Navigator::new();
+        nav.set_destination(0, 0);
+        // After arriving, navigating is false
+        assert_eq!(nav.step(), 0);
+    }
+
+    #[test]
+    fn test_waypoint_advance() {
+        let mut nav = Navigator::new();
+        nav.add_waypoint(2, 0);
+        nav.add_waypoint(2, 2);
+        nav.set_destination(0, 2);
+        // Before any steps, next_waypoint is wp0
+        assert_eq!(nav.next_waypoint(), Point { x: 2, y: 0 });
+        // Walk to wp0 and beyond: the waypoint advances on the step AFTER arrival
+        loop {
+            let r = nav.step();
+            assert_ne!(r, -1);
+            // After arriving at wp0, next call to step triggers wp advance
+            if nav.next_waypoint() == (Point { x: 2, y: 2 }) { break; }
+            if nav.at_destination() { break; }
+        }
+        // After arriving at wp0, next_waypoint should advance to wp1
+        assert_eq!(nav.next_waypoint(), Point { x: 2, y: 2 });
     }
 }
