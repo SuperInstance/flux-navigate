@@ -1,3 +1,4 @@
+#![allow(clippy::unused_variable, clippy::manual_clamp, clippy::needless_range_loop)]
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, Copy, PartialEq)]
